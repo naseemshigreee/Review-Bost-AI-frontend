@@ -1,228 +1,184 @@
-
 "use client";
 
-import {
-  Suspense,
-  useEffect,
-  useState,
-  type CSSProperties,
-} from "react";
+import { Suspense, useEffect, useState, type CSSProperties } from "react";
+import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import {
-  getBusinesses,
-  starterBusiness,
-  type Business,
-} from "@/lib/business-store";
+  getPublicBusiness,
+  generateReview,
+  trackCopyAndOpen,
+  type PublicBusiness,
+  type GenerateReviewResult,
+} from "@/lib/api";
 
 type Answers = Record<string, string>;
 
 function ReviewContent() {
   const params = useParams<{ businessId: string }>();
   const searchParams = useSearchParams();
+  const preview = searchParams.get("preview") === "true";
 
-  const [business, setBusiness] = useState<Business | null>(null);
+  const [business, setBusiness] = useState<PublicBusiness | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [answers, setAnswers] = useState<Answers>({});
   const [comment, setComment] = useState("");
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState<GenerateReviewResult | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [showFallback, setShowFallback] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    let found: Business | undefined;
-    const config = searchParams.get("config");
-
-    if (config) {
+    let cancelled = false;
+    (async () => {
       try {
-        const parsed = JSON.parse(config) as Business;
-
-        if (
-          parsed.id === params.businessId &&
-          typeof parsed.name === "string" &&
-          typeof parsed.reviewUrl === "string" &&
-          Array.isArray(parsed.categories)
-        ) {
-          found = parsed;
+        const data = await getPublicBusiness(params.businessId, preview);
+        if (!cancelled) {
+          setBusiness(data);
+          setLoading(false);
         }
-      } catch {
-        // Fall back to locally saved settings.
+      } catch (err) {
+        if (!cancelled) {
+          setLoadError(
+            err instanceof Error ? err.message : "Could not load this feedback page."
+          );
+          setLoading(false);
+        }
       }
-    }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [params.businessId, preview]);
 
-    if (!found) {
-      try {
-        found = getBusinesses().find(
-          (item) => item.id === params.businessId
-        );
-      } catch {
-        // Show unavailable state if loading fails.
-      }
-    }
-
-    if (!found && params.businessId === starterBusiness.id) {
-      found = starterBusiness;
-    }
-
-    setBusiness(found ?? null);
-    setLoading(false);
-  }, [params.businessId, searchParams]);
-
-  const accent = business?.accent || "#2878F0";
+  const accent = business?.brand_color || "#2878F0";
 
   const answeredCount = business
-    ? business.categories.filter(
-        (category) => Boolean(answers[category.id])
-      ).length
+    ? business.categories.filter((cat) => Boolean(answers[cat.id])).length
     : 0;
 
   function selectOption(categoryId: string, option: string) {
     setAnswers((current) => ({
       ...current,
-      [categoryId]:
-        current[categoryId] === option ? "" : option,
+      [categoryId]: current[categoryId] === option ? "" : option,
     }));
-
     setError("");
     setNotice("");
-    setShowFallback(false);
+    setDraft(null);
   }
 
   function clearAnswers() {
     setAnswers({});
     setComment("");
-    setDraft("");
+    setDraft(null);
     setError("");
     setNotice("");
-    setShowFallback(false);
   }
 
-  function buildDraft() {
-    if (!business) return "";
-
-    const selected = business.categories
-      .filter((category) => answers[category.id])
-      .map(
-        (category) =>
-          `${category.name}: ${answers[category.id]}`
-      );
-
-    let text = selected.length
-      ? `My experience with ${business.name}: ${selected.join(". ")}.`
-      : `My experience with ${business.name}.`;
-
-    if (comment.trim()) {
-      text += ` Additional feedback: ${comment.trim()}`;
-    }
-
-    return text;
-  }
-
-  async function continueToReview() {
+  async function handleGenerate() {
     if (!business || submitting) return;
 
     if (answeredCount === 0 && !comment.trim()) {
-      setError(
-        "Choose an option or leave a short comment to continue."
-      );
+      setError("Choose an option or leave a short comment to continue.");
       return;
     }
 
-    let reviewUrl: URL;
-
-    try {
-      reviewUrl = new URL(business.reviewUrl.trim());
-
-      if (
-        reviewUrl.protocol !== "https:" &&
-        reviewUrl.protocol !== "http:"
-      ) {
-        throw new Error("Invalid URL");
-      }
-    } catch {
-      setError(
-        "This business has not configured a valid review link yet."
-      );
+    // Validate required categories
+    const missing = business.categories.filter(
+      (cat) => cat.required && !answers[cat.id]
+    );
+    if (missing.length > 0) {
+      setError("Please answer: " + missing.map((m) => m.name).join(", "));
       return;
     }
 
-    const reviewDraft = buildDraft();
-
-    setDraft(reviewDraft);
     setError("");
     setNotice("");
-    setShowFallback(false);
     setSubmitting(true);
-
-    // Open the tab immediately during the click, before awaiting
-    // clipboard access, to reduce popup-blocking issues.
-    let destination: Window | null = null;
+    setDraft(null);
 
     try {
-      destination = window.open("about:blank", "_blank");
-    } catch {
-      destination = null;
+      const answerList = Object.entries(answers)
+        .filter(([, rating]) => rating)
+        .map(([category_id, rating]) => ({ category_id, rating }));
+
+      const result = await generateReview(
+        business.id,
+        answerList,
+        comment.trim(),
+        false
+      );
+      setDraft(result);
+      if (result.warnings.length > 0) {
+        setNotice(result.warnings.join(" "));
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not generate a review draft."
+      );
+    } finally {
+      setSubmitting(false);
     }
+  }
+
+  async function copyAndOpen() {
+    if (!business || !draft) return;
 
     let copied = false;
-
     try {
-      if (
-        window.isSecureContext &&
-        navigator.clipboard?.writeText
-      ) {
-        await navigator.clipboard.writeText(reviewDraft);
+      if (window.isSecureContext && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(draft.review);
         copied = true;
       }
     } catch {
       copied = false;
     }
 
-    if (destination && !destination.closed) {
-      // A separate tab was opened successfully. Navigate it
-      // regardless of whether clipboard copying succeeded.
-      try {
-        destination.location.replace(reviewUrl.href);
-      } catch {
-        destination = null;
-      }
-    }
+    // Track the event (fire and forget)
+    trackCopyAndOpen(business.id).catch(() => {});
 
-    if (copied) {
-      setNotice(
-        "Your review text has been copied. Paste it into the review page and submit it."
-      );
-
-      if (!destination) {
-        // The browser blocked a new tab, so use the current tab.
-        setNotice(
-          "Your review text has been copied. Opening the review page..."
-        );
-        window.location.assign(reviewUrl.href);
-        return;
+    if (business.review_destination_url) {
+      if (copied) {
+        setNotice("Review copied! Opening the review page...");
+        window.open(business.review_destination_url, "_blank", "noopener,noreferrer");
+      } else {
+        setNotice("Copy the text below, then open the review page.");
       }
     } else {
-      setShowFallback(true);
-      setNotice(
-        destination
-          ? "The review page has opened, but automatic copying failed. Copy the text below and paste it into the review page."
-          : "Automatic copying and opening a new tab were blocked. Copy your review below, then use the link to open the review page."
-      );
+      setNotice("Review copied to clipboard.");
     }
-
-    setSubmitting(false);
   }
 
-  const styles = {
-    "--rb-accent": accent,
-  } as CSSProperties;
+  async function regenerate() {
+    if (!business || submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const answerList = Object.entries(answers)
+        .filter(([, rating]) => rating)
+        .map(([category_id, rating]) => ({ category_id, rating }));
+
+      const result = await generateReview(
+        business.id,
+        answerList,
+        comment.trim(),
+        true
+      );
+      setDraft(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not regenerate.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const styles = { "--rb-accent": accent } as CSSProperties;
 
   if (loading) {
     return (
       <main className="rb-page" style={styles}>
         <div className="rb-state">
-          <span className="rb-brand-mark">✦</span>
+          <span className="rb-brand-mark">*</span>
           <h1>Getting things ready</h1>
           <p>Just a moment...</p>
         </div>
@@ -230,19 +186,13 @@ function ReviewContent() {
     );
   }
 
-  if (!business || !business.active) {
+  if (loadError || !business) {
     return (
       <main className="rb-page" style={styles}>
         <div className="rb-state">
-          <span className="rb-brand-mark">✦</span>
-          <h1>
-            {business ? "Feedback unavailable" : "Page not found"}
-          </h1>
-          <p>
-            {business
-              ? "This business has temporarily paused feedback."
-              : "Please scan the latest QR code provided by the business."}
-          </p>
+          <span className="rb-brand-mark">*</span>
+          <h1>Page not found</h1>
+          <p>{loadError || "Please scan the latest QR code provided by the business."}</p>
         </div>
       </main>
     );
@@ -254,15 +204,14 @@ function ReviewContent() {
       <div className="rb-background-glow rb-glow-two" />
 
       <header className="rb-topbar">
-        <a href="/" className="rb-brand" aria-label="ReviewBoost AI home">
-          <span className="rb-brand-mark">✦</span>
+        <Link href="/" className="rb-brand" aria-label="ReviewBoost AI home">
+          <span className="rb-brand-mark">*</span>
           <span>
             ReviewBoost <strong>AI</strong>
           </span>
-        </a>
-
+        </Link>
         <span className="rb-top-note">
-          Your feedback matters <span>♡</span>
+          Your feedback matters <span>*</span>
         </span>
       </header>
 
@@ -271,12 +220,10 @@ function ReviewContent() {
           <div className="rb-business-avatar" aria-hidden="true">
             {business.name.trim().charAt(0).toUpperCase() || "B"}
           </div>
-
           <div className="rb-business-details">
             <h1>{business.name}</h1>
-            <p>{business.type || "Local Business"}</p>
+            <p>{business.business_type || "Local Business"}</p>
           </div>
-
           <span className="rb-secure-label">
             <span className="rb-status-dot" />
             Feedback
@@ -287,7 +234,7 @@ function ReviewContent() {
           <span className="rb-kicker">A MOMENT FOR US</span>
           <h2>How was your experience?</h2>
           <p>
-            {business.welcome ||
+            {business.welcome_message ||
               "Tell us what you enjoyed. It only takes a few taps."}
           </p>
         </div>
@@ -305,7 +252,6 @@ function ReviewContent() {
               }}
             />
           </div>
-
           <span>
             {answeredCount === 0
               ? "Let's get started"
@@ -320,38 +266,51 @@ function ReviewContent() {
                 <span className="rb-category-index">
                   {String(index + 1).padStart(2, "0")}
                 </span>
-
-                <h3>{category.name}</h3>
-
+                <h3>
+                  {category.name}
+                  {category.required && (
+                    <span style={{ color: "var(--rb-accent)", fontSize: 10, marginLeft: 4 }}>
+                      *
+                    </span>
+                  )}
+                </h3>
                 {answers[category.id] && (
-                  <span className="rb-complete">✓</span>
+                  <span className="rb-complete">{"\u2713"}</span>
                 )}
               </div>
+
+              {category.description && (
+                <p
+                  style={{
+                    margin: "0 0 10px",
+                    color: "#7a8ca5",
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {category.description}
+                </p>
+              )}
 
               <div
                 className="rb-options"
                 role="group"
                 aria-label={category.name}
               >
-                {category.options.map((option) => {
-                  const selected = answers[category.id] === option;
-
+                {business.rating_options.map((option) => {
+                  const selected = answers[category.id] === option.label;
                   return (
                     <button
                       type="button"
-                      key={option}
-                      className={`rb-option ${
-                        selected ? "rb-option-selected" : ""
-                      }`}
+                      key={option.label}
+                      className={"rb-option " + (selected ? "rb-option-selected" : "")}
                       aria-pressed={selected}
-                      onClick={() =>
-                        selectOption(category.id, option)
-                      }
+                      onClick={() => selectOption(category.id, option.label)}
                     >
                       <span className="rb-option-indicator">
-                        {selected ? "✓" : ""}
+                        {selected ? "\u2713" : ""}
                       </span>
-                      {option}
+                      {option.label}
                     </button>
                   );
                 })}
@@ -365,23 +324,21 @@ function ReviewContent() {
             Anything else to share?
             <span>OPTIONAL</span>
           </label>
-
           <textarea
             id="rb-comment"
             value={comment}
-            onChange={(event) => {
-              setComment(event.target.value);
+            onChange={(e) => {
+              setComment(e.target.value);
               setError("");
               setNotice("");
             }}
             placeholder="Your thoughts help us do better..."
-            maxLength={1000}
+            maxLength={500}
             rows={3}
           />
-
           <div className="rb-comment-footer">
             <span>Every honest thought counts.</span>
-            <span>{comment.length}/1000</span>
+            <span>{comment.length}/500</span>
           </div>
         </div>
 
@@ -394,111 +351,87 @@ function ReviewContent() {
 
         {notice && (
           <div className="rb-alert rb-alert-success" role="status">
-            <span>✓</span>
+            <span>{"\u2713"}</span>
             <p>{notice}</p>
           </div>
         )}
 
-        {showFallback && (
+        {draft && (
           <div className="rb-fallback">
-            <label htmlFor="rb-draft">Your feedback draft</label>
-
+            <label htmlFor="rb-draft">
+              Your AI-generated review draft
+              {draft.source === "fallback" && (
+                <span style={{ marginLeft: 8, color: "#8393a9", fontSize: 10 }}>
+                  (basic draft - AI unavailable)
+                </span>
+              )}
+            </label>
             <textarea
               id="rb-draft"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              value={draft.review}
+              onChange={(e) =>
+                setDraft({ ...draft, review: e.target.value })
+              }
               rows={5}
             />
-
-            <button
-              type="button"
-              className="rb-copy-button"
-              onClick={async () => {
-                try {
-                  if (
-                    window.isSecureContext &&
-                    navigator.clipboard?.writeText
-                  ) {
-                    await navigator.clipboard.writeText(draft);
-                    setNotice(
-                      "Review copied. Paste it into the review page."
-                    );
-                    return;
-                  }
-
-                  throw new Error("Clipboard unavailable");
-                } catch {
-                  const field = document.getElementById(
-                    "rb-draft"
-                  ) as HTMLTextAreaElement | null;
-
-                  if (field) {
-                    field.focus();
-                    field.select();
-
-                    const success =
-                      document.execCommand("copy");
-
-                    setNotice(
-                      success
-                        ? "Review copied. Paste it into the review page."
-                        : "Your review is selected. Copy it manually, then open the review page."
-                    );
-                  }
-                }
+            <p
+              style={{
+                margin: "4px 0 0",
+                color: "#8393a9",
+                fontSize: 10,
+                lineHeight: 1.6,
               }}
             >
-              Copy feedback
-            </button>
+              {draft.disclaimer}
+            </p>
 
-            <a
-              className="rb-open-link"
-              href={business.reviewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Open review page ↗
-            </a>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button type="button" className="rb-copy-button" onClick={copyAndOpen}>
+                Copy &amp; Open review page
+              </button>
+              <button
+                type="button"
+                className="rb-copy-button"
+                onClick={regenerate}
+                disabled={submitting}
+              >
+                {submitting ? "Regenerating..." : "Regenerate"}
+              </button>
+              {business.review_destination_url && (
+                <a
+                  className="rb-open-link"
+                  href={business.review_destination_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ margin: 0 }}
+                >
+                  Open review page {"\u2197"}
+                </a>
+              )}
+            </div>
           </div>
         )}
 
-        <button
-          type="button"
-          className="rb-submit"
-          onClick={continueToReview}
-          disabled={submitting}
-        >
-          <span>
-            {submitting
-              ? "Preparing your feedback..."
-              : "Continue to Review"}
-          </span>
-          {!submitting && (
-            <span className="rb-submit-arrow">→</span>
-          )}
-        </button>
-
-        {notice && !showFallback && (
-          <a
-            className="rb-open-link"
-            href={business.reviewUrl}
-            target="_blank"
-            rel="noopener noreferrer"
+        {!draft && (
+          <button
+            type="button"
+            className="rb-submit"
+            onClick={handleGenerate}
+            disabled={submitting}
           >
-            Open review page ↗
-          </a>
+            <span>
+              {submitting ? "Generating your review..." : "Generate Review"}
+            </span>
+            {!submitting && <span className="rb-submit-arrow">{"\u2192"}</span>}
+          </button>
         )}
 
-        <button
-          type="button"
-          className="rb-reset"
-          onClick={clearAnswers}
-        >
+        <button type="button" className="rb-reset" onClick={clearAnswers}>
           Clear answers
         </button>
 
         <div className="rb-honesty">
-          <span>✦</span>
+          <span>*</span>
           Share feedback that reflects your actual experience.
         </div>
       </section>
@@ -516,7 +449,7 @@ export default function CustomerReviewPage() {
       fallback={
         <main className="rb-page">
           <div className="rb-state">
-            <span className="rb-brand-mark">✦</span>
+            <span className="rb-brand-mark">*</span>
             <h1>Getting things ready</h1>
             <p>Just a moment...</p>
           </div>

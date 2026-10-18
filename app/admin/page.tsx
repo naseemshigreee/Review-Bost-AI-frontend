@@ -1,416 +1,448 @@
-
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { QRCodeCanvas } from "qrcode.react";
+import { useEffect, useState } from "react";
 import {
-  getBusinesses,
-  saveBusinesses,
-  starterBusiness,
-  makeBusinessId,
-  createQrUrl,
-  type Business,
-  type FeedbackCategory,
-} from "@/lib/business-store";
+  adminLogin,
+  adminLogout,
+  isLoggedIn,
+  listBusinesses,
+  createBusiness,
+  updateBusiness,
+  deleteBusiness,
+  setBusinessStatus,
+  getTemplates,
+  getDashboard,
+  qrUrl,
+  DEFAULT_RATING_OPTIONS,
+  type BackendBusiness,
+  type BusinessInput,
+  type Template,
+  type DashboardStats,
+  type BackendCategory,
+  type BackendRatingOption,
+} from "@/lib/api";
 
 const BUSINESS_TYPES = [
-  "General Business",
+  "Business",
   "Restaurant / Cafe",
-  "Hotel / Hospitality",
-  "Salon / Beauty",
-  "Healthcare",
-  "Retail Store",
-  "Software / Agency",
-  "Education",
-  "Other",
+  "Salon",
+  "Hotel",
+  "Software company / Agency",
 ];
 
-function cloneStarterBusiness(): Business {
+function emptyForm(): BusinessInput {
   return {
-    ...starterBusiness,
-    categories: starterBusiness.categories.map((category) => ({
-      ...category,
-      options: [...category.options],
-    })),
+    name: "",
+    business_type: "Business",
+    logo_url: null,
+    brand_color: "#4F46E5",
+    welcome_message:
+      "We'd love to hear about your experience. It only takes a minute.",
+    status: "active",
+    review_destination_url: null,
+    categories: [{ id: undefined, name: "", description: "", required: true }],
+    rating_options: DEFAULT_RATING_OPTIONS.map((o) => ({ ...o })),
   };
 }
 
-function isValidHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === "https:" || url.protocol === "http:";
-  } catch {
-    return false;
-  }
+function businessToForm(b: BackendBusiness): BusinessInput {
+  return {
+    name: b.name,
+    business_type: b.business_type,
+    logo_url: b.logo_url,
+    brand_color: b.brand_color,
+    welcome_message: b.welcome_message,
+    status: b.status,
+    review_destination_url: b.review_destination_url,
+    categories: b.categories.map((c) => ({
+      id: c.id,
+      name: c.name,
+      description: c.description,
+      required: c.required,
+    })),
+    rating_options: b.rating_options.map((r) => ({ ...r })),
+  };
 }
 
 export default function AdminPage() {
-  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [authed, setAuthed] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  const [businesses, setBusinesses] = useState<BackendBusiness[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const [origin, setOrigin] = useState("");
-  const [ready, setReady] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [dashboard, setDashboard] = useState<DashboardStats | null>(null);
 
-  const [newName, setNewName] = useState("");
-  const [newType, setNewType] = useState("General Business");
-  const [newReviewUrl, setNewReviewUrl] = useState("");
+  const [form, setForm] = useState<BusinessInput>(emptyForm());
 
-  // Initialize browser-only data after the page mounts.
-  
-useEffect(() => {
-  setOrigin(window.location.origin);
+  // ---- Auth check on mount ----
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAuthed(isLoggedIn());
+    setChecking(false);
+  }, []);
 
-  try {
-    const existing = getBusinesses();
+  // ---- Load data when authenticated ----
+  useEffect(() => {
+    if (!authed) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const [biz, tmpl, dash] = await Promise.all([
+          listBusinesses(),
+          getTemplates(),
+          getDashboard(),
+        ]);
+        if (cancelled) return;
+        setBusinesses(biz);
+        setTemplates(tmpl);
+        setDashboard(dash);
+        if (biz.length > 0 && !selectedId) {
+          setSelectedId(biz[0].id);
+          setForm(businessToForm(biz[0]));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          if (err instanceof Error && "status" in err && (err as Error & { status?: number }).status === 401) {
+            adminLogout();
+            setAuthed(false);
+          } else {
+            setError(err instanceof Error ? err.message : "Failed to load data");
+          }
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authed]);
 
-    setBusinesses(existing);
-    setSelectedId(existing[0]?.id ?? "");
-    setError("");
-  } catch (error) {
-    console.error("Admin initialization error:", error);
-
-    setBusinesses([]);
-    setSelectedId("");
-    setError(
-      error instanceof Error
-        ? error.message
-        : "Could not load businesses. Please check browser storage."
-    );
-  } finally {
-    setReady(true);
-  }
-}, []);
-
-
-  const business = businesses.find((item) => item.id === selectedId);
-
-  const qrUrl = useMemo(() => {
-    if (!business || !origin) return "";
-
-    try {
-      return createQrUrl(business, origin);
-    } catch (err) {
-      console.error("Could not create customer URL:", err);
-      return "";
-    }
-  }, [business, origin]);
-
-  
-function persist(items: Business[]): boolean {
-  try {
-    saveBusinesses(items);
-    setError("");
-    return true;
-  } catch (error) {
-    console.error("Could not save businesses:", error);
-
-    setError(
-      error instanceof Error
-        ? error.message
-        : "Could not save changes in browser storage."
-    );
-
-    return false;
-  }
-}
-
-
-  function updateBusiness(patch: Partial<Business>) {
-    if (!business) return;
-
-    setBusinesses((current) =>
-      current.map((item) =>
-        item.id === business.id ? { ...item, ...patch } : item
-      )
-    );
-
+  // ---- Load selected business into form ----
+  useEffect(() => {
+    if (!selectedId) return;
+    const biz = businesses.find((b) => b.id === selectedId);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (biz) setForm(businessToForm(biz));
     setSaved(false);
     setError("");
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
-  function saveCurrent() {
-    if (!business) {
-      setError("Create or select a business first.");
-      return;
-    }
-
-    if (!business.name.trim()) {
-      setError("Please enter a business name.");
-      return;
-    }
-
-    if (!isValidHttpUrl(business.reviewUrl)) {
-      setError("Enter a valid review URL starting with https:// or http://.");
-      return;
-    }
-
-    if (business.categories.length === 0) {
-      setError("Add at least one feedback category.");
-      return;
-    }
-
-    const cleanedCategories = business.categories.map((category) => ({
-      ...category,
-      name: category.name.trim(),
-      options: category.options
-        .map((option) => option.trim())
-        .filter(Boolean),
-    }));
-
-    if (
-      cleanedCategories.some(
-        (category) => !category.name || category.options.length === 0
-      )
-    ) {
-      setError(
-        "Every feedback category needs a name and at least one rating option."
-      );
-      return;
-    }
-
-    const updated = businesses.map((item) =>
-      item.id === business.id
-        ? {
-            ...item,
-            name: item.name.trim(),
-            reviewUrl: business.reviewUrl.trim(),
-            welcome: item.welcome.trim(),
-            categories: cleanedCategories,
-          }
-        : item
-    );
-
-    if (persist(updated)) {
-      setBusinesses(updated);
-      setSaved(true);
-    }
-  }
-
-  function createBusiness() {
-    const name = newName.trim();
-
-    if (!name) {
-      setError("Enter a business name.");
-      return;
-    }
-
-    if (!isValidHttpUrl(newReviewUrl)) {
-      setError("Enter a valid review destination URL.");
-      return;
-    }
-
-    const fresh: Business = {
-      ...cloneStarterBusiness(),
-      id: makeBusinessId(name),
-      name,
-      type: newType,
-      reviewUrl: newReviewUrl.trim(),
-      categories: starterBusiness.categories.map((category) => ({
-        ...category,
-        id: `${category.id}-${Math.random().toString(36).slice(2, 8)}`,
-        options: [...category.options],
-      })),
-      active: true,
-    };
-
-    const updated = [...businesses, fresh];
-
-    if (!persist(updated)) return;
-
-    setBusinesses(updated);
-    setSelectedId(fresh.id);
-    setSaved(true);
-    setShowCreate(false);
-    setNewName("");
-    setNewType("General Business");
-    setNewReviewUrl("");
-    setError("");
-  }
-
-  function removeBusiness() {
-    if (!business) return;
-
-    const confirmed = window.confirm(
-      `Delete "${business.name}" from this browser?`
-    );
-
-    if (!confirmed) return;
-
-    let updated = businesses.filter((item) => item.id !== business.id);
-
-    if (updated.length === 0) {
-      updated = [cloneStarterBusiness()];
-    }
-
-    if (!persist(updated)) return;
-
-    setBusinesses(updated);
-    setSelectedId(updated[0].id);
-    setSaved(true);
-  }
-
-  function updateCategory(
-    categoryId: string,
-    patch: Partial<FeedbackCategory>
-  ) {
-    if (!business) return;
-
-    updateBusiness({
-      categories: business.categories.map((category) =>
-        category.id === categoryId ? { ...category, ...patch } : category
-      ),
-    });
-  }
-
-  function addCategory() {
-    if (!business) return;
-
-    const category: FeedbackCategory = {
-      id: `category-${Math.random().toString(36).slice(2, 9)}`,
-      name: "New feedback category",
-      options: ["Excellent", "Good", "Average", "Needs improvement"],
-    };
-
-    updateBusiness({
-      categories: [...business.categories, category],
-    });
-  }
-
-  function deleteCategory(categoryId: string) {
-    if (!business) return;
-
-    if (business.categories.length <= 1) {
-      setError("Keep at least one feedback category.");
-      return;
-    }
-
-    updateBusiness({
-      categories: business.categories.filter(
-        (category) => category.id !== categoryId
-      ),
-    });
-  }
-
-  function moveCategory(index: number, direction: -1 | 1) {
-    if (!business) return;
-
-    const categories = [...business.categories];
-    const target = index + direction;
-
-    if (target < 0 || target >= categories.length) return;
-
-    [categories[index], categories[target]] = [
-      categories[target],
-      categories[index],
-    ];
-
-    updateBusiness({ categories });
-  }
-
-  // Download the QR code as a high-resolution PNG.
-  function downloadQr() {
-    if (!business || !qrUrl) {
-      setError("The QR code is not ready yet.");
-      return;
-    }
-
-    const canvas = document.querySelector("#business-qr canvas");
-
-    if (!(canvas instanceof HTMLCanvasElement)) {
-      setError("Could not find the QR code. Please refresh the page.");
-      return;
-    }
-
+  // ---- Login ----
+  async function handleLogin() {
+    setLoggingIn(true);
+    setLoginError("");
     try {
-      canvas.toBlob((blob) => {
-        if (!blob) {
-          setError("Could not create the PNG file. Please try again.");
-          return;
-        }
-
-        const safeName =
-          business.name
-            .trim()
-            .replace(/[^a-z0-9-_]+/gi, "-")
-            .replace(/^-+|-+$/g, "") || "business";
-
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-
-        link.href = url;
-        link.download = `${safeName}-qr.png`;
-
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-
-        window.setTimeout(() => URL.revokeObjectURL(url), 2000);
-        setError("");
-      }, "image/png");
-    } catch (error) {
-      console.error("QR PNG download error:", error);
-      setError("Could not download the QR code. Please try again.");
+      await adminLogin(password);
+      setAuthed(true);
+      setPassword("");
+    } catch (err) {
+      setLoginError(
+        err instanceof Error ? err.message : "Login failed. Check your password."
+      );
+    } finally {
+      setLoggingIn(false);
     }
   }
 
-  function previewCustomer() {
-    if (!business || !qrUrl) {
-      setError("The customer URL is not ready yet.");
-      return;
-    }
-
-    if (!business.active) {
-      setError("Activate this business before previewing its customer page.");
-      return;
-    }
-
-    if (!isValidHttpUrl(business.reviewUrl)) {
-      setError("Enter a valid review destination URL first.");
-      return;
-    }
-
-    // Save the current workspace before opening the customer page.
-    const updated = businesses.map((item) =>
-      item.id === business.id
-        ? {
-            ...item,
-            name: item.name.trim(),
-            reviewUrl: item.reviewUrl.trim(),
-          }
-        : item
-    );
-
-    if (!persist(updated)) return;
-
-    setBusinesses(updated);
-    setSaved(true);
-
-    // Open directly from the button click to reduce popup-blocker issues.
-    window.open(qrUrl, "_blank", "noopener,noreferrer");
+  function handleLogout() {
+    adminLogout();
+    setAuthed(false);
+    setBusinesses([]);
+    setSelectedId("");
+    setDashboard(null);
   }
 
-  if (!ready) {
+  // ---- Save (update) ----
+  async function handleSave() {
+    if (!selectedId) return;
+    setSaved(false);
+    setError("");
+    try {
+      const updated = await updateBusiness(selectedId, form);
+      setBusinesses((prev) =>
+        prev.map((b) => (b.id === selectedId ? updated : b))
+      );
+      setForm(businessToForm(updated));
+      setSaved(true);
+      const dash = await getDashboard();
+      setDashboard(dash);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save changes");
+    }
+  }
+
+  // ---- Create ----
+  async function handleCreate() {
+    setError("");
+    try {
+      const created = await createBusiness(form);
+      setBusinesses((prev) => [created, ...prev]);
+      setSelectedId(created.id);
+      setForm(businessToForm(created));
+      setShowCreate(false);
+      const dash = await getDashboard();
+      setDashboard(dash);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create business");
+    }
+  }
+
+  // ---- Delete ----
+  async function handleDelete() {
+    if (!selectedId) return;
+    if (!window.confirm(`Delete "${form.name}"? This cannot be undone.`)) return;
+    setError("");
+    try {
+      await deleteBusiness(selectedId);
+      const remaining = businesses.filter((b) => b.id !== selectedId);
+      setBusinesses(remaining);
+      if (remaining.length > 0) {
+        setSelectedId(remaining[0].id);
+        setForm(businessToForm(remaining[0]));
+      } else {
+        setSelectedId("");
+        setForm(emptyForm());
+      }
+      const dash = await getDashboard();
+      setDashboard(dash);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete business");
+    }
+  }
+
+  // ---- Toggle status ----
+  async function handleToggleStatus() {
+    if (!selectedId) return;
+    const newStatus = form.status === "active" ? "inactive" : "active";
+    setError("");
+    try {
+      const updated = await setBusinessStatus(selectedId, newStatus);
+      setForm(businessToForm(updated));
+      setBusinesses((prev) =>
+        prev.map((b) => (b.id === selectedId ? updated : b))
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change status");
+    }
+  }
+
+  // ---- Category helpers ----
+  function addCategory() {
+    setForm((f) => ({
+      ...f,
+      categories: [
+        ...f.categories,
+        { id: undefined, name: "", description: "", required: true },
+      ],
+    }));
+  }
+
+  function updateCategory(index: number, patch: Partial<BackendCategory>) {
+    setForm((f) => ({
+      ...f,
+      categories: f.categories.map((c, i) => (i === index ? { ...c, ...patch } : c)),
+    }));
+  }
+
+  function deleteCategory(index: number) {
+    setForm((f) => ({
+      ...f,
+      categories: f.categories.filter((_, i) => i !== index),
+    }));
+  }
+
+  function moveCategory(index: number, dir: -1 | 1) {
+    setForm((f) => {
+      const cats = [...f.categories];
+      const target = index + dir;
+      if (target < 0 || target >= cats.length) return f;
+      [cats[index], cats[target]] = [cats[target], cats[index]];
+      return { ...f, categories: cats };
+    });
+  }
+
+  // ---- Rating option helpers ----
+  function updateRatingOption(index: number, patch: Partial<BackendRatingOption>) {
+    setForm((f) => ({
+      ...f,
+      rating_options: f.rating_options.map((r, i) =>
+        i === index ? { ...r, ...patch } : r
+      ),
+    }));
+  }
+
+  function addRatingOption() {
+    setForm((f) => ({
+      ...f,
+      rating_options: [...f.rating_options, { label: "", score: 1 }],
+    }));
+  }
+
+  function deleteRatingOption(index: number) {
+    setForm((f) => ({
+      ...f,
+      rating_options:
+        f.rating_options.length <= 2
+          ? f.rating_options
+          : f.rating_options.filter((_, i) => i !== index),
+    }));
+  }
+
+  // ---- Apply template ----
+  function applyTemplate(key: string) {
+    const tmpl = templates.find((t) => t.key === key);
+    if (!tmpl) return;
+    setForm((f) => ({
+      ...f,
+      business_type: tmpl.label,
+      categories: tmpl.categories.map((c) => ({
+        id: undefined,
+        name: c.name,
+        description: c.description,
+        required: c.required,
+      })),
+      rating_options: tmpl.rating_options.map((r) => ({ ...r })),
+    }));
+  }
+
+  const selectedBusiness = businesses.find((b) => b.id === selectedId);
+
+  // ===================== RENDER =====================
+
+  if (checking) {
     return (
       <main className="admin-shell">
         <div className="panel" style={{ margin: 32, padding: 24 }}>
-          Loading your business workspace…
+          Loading...
         </div>
       </main>
     );
   }
 
+  // ---- Login screen ----
+  if (!authed) {
+    return (
+      <main className="admin-shell">
+        <header className="topbar">
+          <a className="brand" href="/admin">
+            <span className="brand-mark">*</span>
+            <span>
+              ReviewBoost <b>AI</b>
+            </span>
+          </a>
+          <span className="topbar-note">TURN FEEDBACK INTO GROWTH</span>
+        </header>
+
+        <section className="admin-hero">
+          <p className="eyebrow">ADMIN LOGIN</p>
+          <h1>
+            Admin <span>Panel</span>
+          </h1>
+          <p>Enter your password to manage your businesses.</p>
+        </section>
+
+        <section
+          className="panel"
+          style={{
+            maxWidth: 420,
+            margin: "0 auto 60px",
+            padding: 32,
+          }}
+        >
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">SECURE ACCESS</p>
+              <h3>Password</h3>
+            </div>
+            <span className="heading-icon">L</span>
+          </div>
+
+          <div style={{ display: "grid", gap: 16, marginTop: 20 }}>
+            <label className="field">
+              Admin password
+              <input
+                type="password"
+                autoFocus
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleLogin();
+                }}
+                placeholder="Enter password"
+              />
+            </label>
+
+            {loginError && (
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  background: "#fff1f2",
+                  border: "1px solid #fecdd3",
+                  color: "#9f1239",
+                  fontSize: 12,
+                }}
+              >
+                {loginError}
+              </div>
+            )}
+
+            <button
+              type="button"
+              className="primary-button full-width"
+              onClick={handleLogin}
+              disabled={loggingIn || !password}
+            >
+              {loggingIn ? "Logging in..." : "Log in"}
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  // ---- Admin panel ----
   return (
     <main className="admin-shell">
       <header className="topbar">
         <a className="brand" href="/admin">
-          <span className="brand-mark">✦</span>
+          <span className="brand-mark">*</span>
           <span>
             ReviewBoost <b>AI</b>
           </span>
         </a>
-        <span className="topbar-note">TURN FEEDBACK INTO GROWTH</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <span className="topbar-note">CONNECTED TO BACKEND</span>
+          <button
+            type="button"
+            onClick={handleLogout}
+            style={{
+              padding: "8px 14px",
+              border: "1px solid rgba(141, 185, 240, 0.25)",
+              borderRadius: 10,
+              color: "#dcecff",
+              background: "rgba(255, 255, 255, 0.045)",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            Log out
+          </button>
+        </div>
       </header>
 
       <section className="admin-hero">
@@ -420,22 +452,56 @@ function persist(items: Business[]): boolean {
         </h1>
         <p>
           Configure your business, customize feedback, and create your QR code.
+          Data is stored on the server.
         </p>
       </section>
 
+      {dashboard && (
+        <section
+          style={{
+            maxWidth: 1200,
+            margin: "0 auto 20px",
+            padding: "0 20px",
+            display: "flex",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          {[
+            { label: "Businesses", value: dashboard.total_businesses },
+            { label: "Active", value: dashboard.active_businesses },
+            { label: "Visits", value: dashboard.total_visits },
+            { label: "Drafts", value: dashboard.drafts_generated },
+            { label: "Copy & Open", value: dashboard.copy_and_open_clicks },
+          ].map((stat) => (
+            <div
+              key={stat.label}
+              className="panel"
+              style={{ flex: "1 1 140px", padding: "16px 18px" }}
+            >
+              <p className="eyebrow">{stat.label.toUpperCase()}</p>
+              <p style={{ margin: "6px 0 0", fontSize: 28, fontWeight: 800 }}>
+                {stat.value}
+              </p>
+            </div>
+          ))}
+        </section>
+      )}
+
       <section className="admin-layout">
+        {/* Sidebar */}
         <aside className="panel sidebar">
           <div className="section-heading">
             <div>
               <p className="eyebrow">WORKSPACE</p>
               <h2>Your businesses</h2>
             </div>
-
             <button
               type="button"
               className="icon-button"
               onClick={() => {
                 setError("");
+                setForm(emptyForm());
                 setShowCreate(true);
               }}
               aria-label="Add business"
@@ -446,31 +512,31 @@ function persist(items: Business[]): boolean {
           </div>
 
           <div className="business-list">
+            {loading && businesses.length === 0 && (
+              <p className="muted" style={{ padding: 10 }}>
+                Loading...
+              </p>
+            )}
+            {!loading && businesses.length === 0 && (
+              <p className="muted" style={{ padding: 10 }}>
+                No businesses yet. Create one to get started.
+              </p>
+            )}
             {businesses.map((item) => (
               <button
                 type="button"
                 key={item.id}
-                className={`business-item ${
-                  item.id === selectedId ? "active" : ""
-                }`}
-                onClick={() => {
-                  setSelectedId(item.id);
-                  setSaved(false);
-                  setError("");
-                }}
+                className={"business-item " + (item.id === selectedId ? "active" : "")}
+                onClick={() => setSelectedId(item.id)}
               >
                 <span className="business-avatar">
                   {item.name.slice(0, 1).toUpperCase() || "B"}
                 </span>
-
                 <span className="business-item-text">
                   <strong>{item.name}</strong>
-                  <small>{item.type}</small>
+                  <small>{item.business_type}</small>
                 </span>
-
-                <span
-                  className={`status-dot ${item.active ? "" : "inactive"}`}
-                />
+                <span className={"status-dot " + (item.status === "active" ? "" : "inactive")} />
               </button>
             ))}
           </div>
@@ -480,6 +546,7 @@ function persist(items: Business[]): boolean {
             className="secondary-button full-width"
             onClick={() => {
               setError("");
+              setForm(emptyForm());
               setShowCreate(true);
             }}
           >
@@ -487,44 +554,41 @@ function persist(items: Business[]): boolean {
           </button>
 
           <div className="sidebar-tip">
-            <span>✦</span>
+            <span>*</span>
             <p>Each business gets its own questions and customer QR link.</p>
           </div>
         </aside>
 
-        {business ? (
+        {/* Main area */}
+        {selectedBusiness ? (
           <div className="admin-main">
             <div className="page-heading">
               <div>
                 <p className="eyebrow">BUSINESS CONFIGURATION</p>
-                <h2>{business.name}</h2>
-                <p className="muted">
-                  Configure your details, then save your changes.
-                </p>
+                <h2>{form.name || "Untitled"}</h2>
+                <p className="muted">Configure your details, then save your changes.</p>
               </div>
-
-              <span className="status-pill">
-                {business.active ? "● Active" : "○ Inactive"}
+              <span className={"status-pill " + (form.status === "active" ? "" : "")}>
+                {form.status === "active" ? "Active" : "Inactive"}
               </span>
             </div>
 
+            {/* Profile */}
             <section className="panel form-panel">
               <div className="section-heading">
                 <div>
                   <span className="step-label">01 / BUSINESS PROFILE</span>
                   <h3>Make it yours</h3>
                 </div>
-                <span className="heading-icon">▧</span>
+                <span className="heading-icon">H</span>
               </div>
 
               <div className="form-grid">
                 <label className="field">
                   Business name
                   <input
-                    value={business.name}
-                    onChange={(event) =>
-                      updateBusiness({ name: event.target.value })
-                    }
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
                     placeholder="e.g. Bluebird Cafe"
                   />
                 </label>
@@ -532,10 +596,8 @@ function persist(items: Business[]): boolean {
                 <label className="field">
                   Business type
                   <select
-                    value={business.type}
-                    onChange={(event) =>
-                      updateBusiness({ type: event.target.value })
-                    }
+                    value={form.business_type}
+                    onChange={(e) => setForm({ ...form, business_type: e.target.value })}
                   >
                     {BUSINESS_TYPES.map((type) => (
                       <option key={type} value={type}>
@@ -548,13 +610,34 @@ function persist(items: Business[]): boolean {
                 <label className="field field-wide">
                   Welcome message
                   <textarea
-                    value={business.welcome}
-                    onChange={(event) =>
-                      updateBusiness({ welcome: event.target.value })
-                    }
+                    value={form.welcome_message}
+                    onChange={(e) => setForm({ ...form, welcome_message: e.target.value })}
                     rows={2}
                     placeholder="Write a friendly welcome message."
                   />
+                </label>
+
+                <label className="field">
+                  Logo URL (optional)
+                  <input
+                    type="url"
+                    value={form.logo_url || ""}
+                    onChange={(e) => setForm({ ...form, logo_url: e.target.value || null })}
+                    placeholder="https://..."
+                  />
+                </label>
+
+                <label className="field">
+                  Review destination URL
+                  <input
+                    type="url"
+                    value={form.review_destination_url || ""}
+                    onChange={(e) =>
+                      setForm({ ...form, review_destination_url: e.target.value || null })
+                    }
+                    placeholder="https://maps.google.com/..."
+                  />
+                  <small>Where customers go to post their review.</small>
                 </label>
 
                 <label className="field">
@@ -562,256 +645,201 @@ function persist(items: Business[]): boolean {
                   <div className="color-input">
                     <input
                       type="color"
-                      value={business.accent || "#398bff"}
-                      onChange={(event) =>
-                        updateBusiness({ accent: event.target.value })
-                      }
+                      value={form.brand_color}
+                      onChange={(e) => setForm({ ...form, brand_color: e.target.value })}
                     />
-                    <span>
-                      {(business.accent || "#398bff").toUpperCase()}
-                    </span>
+                    <span>{form.brand_color.toUpperCase()}</span>
                   </div>
                 </label>
 
                 <label className="field">
-                  Customer page status
+                  Status
                   <select
-                    value={business.active ? "active" : "inactive"}
-                    onChange={(event) =>
-                      updateBusiness({
-                        active: event.target.value === "active",
-                      })
-                    }
+                    value={form.status}
+                    onChange={(e) => setForm({ ...form, status: e.target.value as "active" | "inactive" })}
                   >
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                   </select>
                 </label>
               </div>
+
+              {templates.length > 0 && (
+                <div style={{ marginTop: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <span className="muted" style={{ fontSize: 11, fontWeight: 700 }}>
+                    Quick template:
+                  </span>
+                  {templates.map((t) => (
+                    <button
+                      key={t.key}
+                      type="button"
+                      className="secondary-button"
+                      style={{ minHeight: 32, padding: "6px 12px", fontSize: 11 }}
+                      onClick={() => applyTemplate(t.key)}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </section>
 
+            {/* Categories */}
             <section className="panel form-panel">
               <div className="section-heading">
                 <div>
-                  <span className="step-label">02 / FEEDBACK FORM</span>
+                  <span className="step-label">02 / FEEDBACK QUESTIONS</span>
                   <h3>Customize your questions</h3>
-                  <p className="muted">
-                    Edit category names and rating options. Separate options
-                    with commas.
-                  </p>
+                  <p className="muted">Each question gets a name and description.</p>
                 </div>
-                <span className="heading-icon">☷</span>
+                <span className="heading-icon">Q</span>
               </div>
 
               <div className="category-list">
-                {business.categories.map((category, index) => (
-                  <div className="category-editor" key={category.id}>
+                {form.categories.map((cat, index) => (
+                  <div className="category-editor" key={index}>
                     <div className="category-number">
                       {String(index + 1).padStart(2, "0")}
                     </div>
-
                     <div className="category-fields">
                       <label className="field">
-                        Category name
+                        Question name
                         <input
-                          value={category.name}
-                          onChange={(event) =>
-                            updateCategory(category.id, {
-                              name: event.target.value,
-                            })
-                          }
+                          value={cat.name}
+                          onChange={(e) => updateCategory(index, { name: e.target.value })}
+                          placeholder="e.g. Food Quality"
                         />
                       </label>
-
                       <label className="field">
-                        Rating options (comma-separated)
+                        Description (optional)
                         <input
-                          value={category.options.join(", ")}
-                          onChange={(event) =>
-                            updateCategory(category.id, {
-                              options: event.target.value
-                                .split(",")
-                                .map((value) => value.trim())
-                                .filter(Boolean),
-                            })
-                          }
-                          placeholder="Excellent, Good, Average, Poor"
+                          value={cat.description}
+                          onChange={(e) => updateCategory(index, { description: e.target.value })}
+                          placeholder="Help text for this question"
                         />
+                      </label>
+                      <label className="field" style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={cat.required}
+                          onChange={(e) => updateCategory(index, { required: e.target.checked })}
+                        />
+                        <span>Required</span>
                       </label>
                     </div>
-
                     <div className="category-actions">
-                      <button
-                        type="button"
-                        className="tiny-button"
-                        onClick={() => moveCategory(index, -1)}
-                        disabled={index === 0}
-                        title="Move up"
-                      >
-                        ↑
-                      </button>
-
-                      <button
-                        type="button"
-                        className="tiny-button"
-                        onClick={() => moveCategory(index, 1)}
-                        disabled={index === business.categories.length - 1}
-                        title="Move down"
-                      >
-                        ↓
-                      </button>
-
-                      <button
-                        type="button"
-                        className="tiny-button danger"
-                        onClick={() => deleteCategory(category.id)}
-                        title="Delete category"
-                      >
-                        ×
-                      </button>
+                      <button type="button" className="tiny-button" onClick={() => moveCategory(index, -1)} disabled={index === 0} title="Move up">^</button>
+                      <button type="button" className="tiny-button" onClick={() => moveCategory(index, 1)} disabled={index === form.categories.length - 1} title="Move down">v</button>
+                      <button type="button" className="tiny-button danger" onClick={() => deleteCategory(index)} title="Delete">x</button>
                     </div>
                   </div>
                 ))}
               </div>
-
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={addCategory}
-              >
-                + Add feedback category
+              <button type="button" className="secondary-button" onClick={addCategory}>
+                + Add question
               </button>
             </section>
 
+            {/* Rating options */}
             <section className="panel form-panel">
               <div className="section-heading">
                 <div>
-                  <span className="step-label">03 / REVIEW DESTINATION</span>
-                  <h3>Where should customers go?</h3>
+                  <span className="step-label">03 / RATING OPTIONS</span>
+                  <h3>Rating choices</h3>
+                  <p className="muted">These options apply to all questions. Score 1-5 (higher = better).</p>
                 </div>
-                <span className="heading-icon">↗</span>
+                <span className="heading-icon">R</span>
               </div>
 
-              <label className="field">
-                Review destination URL
-                <input
-                  type="url"
-                  value={business.reviewUrl}
-                  onChange={(event) =>
-                    updateBusiness({ reviewUrl: event.target.value })
-                  }
-                  placeholder="https://..."
-                />
-                <small>
-                  Use your real Google review link or another supported review
-                  destination.
-                </small>
-              </label>
+              <div className="category-list">
+                {form.rating_options.map((opt, index) => (
+                  <div className="category-editor" key={index}>
+                    <div className="category-number">{String(index + 1).padStart(2, "0")}</div>
+                    <div className="category-fields" style={{ gridTemplateColumns: "1fr 80px" }}>
+                      <label className="field">
+                        Label
+                        <input
+                          value={opt.label}
+                          onChange={(e) => updateRatingOption(index, { label: e.target.value })}
+                          placeholder="e.g. Excellent"
+                        />
+                      </label>
+                      <label className="field">
+                        Score
+                        <input
+                          type="number"
+                          min={1}
+                          max={5}
+                          value={opt.score}
+                          onChange={(e) => updateRatingOption(index, { score: parseInt(e.target.value) || 1 })}
+                        />
+                      </label>
+                    </div>
+                    <div className="category-actions">
+                      <button type="button" className="tiny-button danger" onClick={() => deleteRatingOption(index)} disabled={form.rating_options.length <= 2} title="Delete">x</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button type="button" className="secondary-button" onClick={addRatingOption}>
+                + Add rating option
+              </button>
             </section>
 
+            {/* QR code */}
             <section className="panel qr-panel">
               <div className="section-heading">
                 <div>
-                  <span className="step-label">04 / QR GENERATOR</span>
+                  <span className="step-label">04 / QR CODE</span>
                   <h3>Your customer QR code</h3>
-                  <p className="muted">
-                    Scan this code to open the customer feedback page.
-                  </p>
+                  <p className="muted">Scan this code to open the customer feedback page.</p>
                 </div>
-                <span className="heading-icon">▦</span>
+                <span className="heading-icon">#</span>
               </div>
 
               <div className="qr-layout">
                 <div className="qr-preview">
-                  {qrUrl ? (
-                    
-<div id="business-qr" className="qr-white">
-  <QRCodeCanvas
-    value={qrUrl}
-    size={1200}
-    level="H"
-    marginSize={4}
-    bgColor="#FFFFFF"
-    fgColor="#000000"
-    style={{
-      display: "block",
-      width: "240px",
-      height: "240px",
-    }}
-  />
-</div>
-
-                  ) : (
-                    <div className="qr-placeholder">
-                      The QR code is not ready.
-                    </div>
-                  )}
-
+                  <div className="qr-white">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={qrUrl(selectedBusiness.id)}
+                      alt={"QR code for " + selectedBusiness.name}
+                      style={{ width: 240, height: 240, display: "block" }}
+                    />
+                  </div>
                   <span className="qr-caption">SCAN TO OPEN FEEDBACK</span>
                 </div>
 
                 <div className="qr-info">
-                  <span className="status-pill">● QR READY</span>
+                  <span className="status-pill">QR READY</span>
                   <h4>Ready to share your feedback page?</h4>
-                  <p className="muted">
-                    Save your settings before testing or downloading the QR
-                    code.
-                  </p>
+                  <p className="muted">Save your settings before downloading the QR code.</p>
 
                   <div className="button-stack">
-                    <button
-                      type="button"
-                      className="primary-button"
-                      onClick={saveCurrent}
-                    >
+                    <button type="button" className="primary-button" onClick={handleSave}>
                       Save Settings
                     </button>
-
-                    
-<button
-  type="button"
-  className="secondary-button"
-  onClick={downloadQr}
->
-  Download QR (PNG)
-</button>
-
-
-                    <button
-                      type="button"
+                    <a
                       className="secondary-button"
-                      onClick={previewCustomer}
+                      href={qrUrl(selectedBusiness.id, true)}
+                      style={{ textDecoration: "none" }}
                     >
-                      Preview Customer Page ↗
+                      Download QR (PNG)
+                    </a>
+                    <button type="button" className="secondary-button" onClick={handleToggleStatus}>
+                      {form.status === "active" ? "Deactivate" : "Activate"}
                     </button>
-
-                    <button
-                      type="button"
-                      className="text-button danger-text"
-                      onClick={removeBusiness}
-                    >
+                    <button type="button" className="text-button danger-text" onClick={handleDelete}>
                       Delete this business
                     </button>
                   </div>
 
-                  {saved && (
-                    <p className="success-message">
-                      ✓ Settings saved in this browser.
-                    </p>
-                  )}
+                  {saved && <p className="success-message">Settings saved on server.</p>}
 
                   <p className="url-label">Customer URL</p>
-                  <code className="url-box">
-                    {qrUrl || "Customer URL unavailable."}
-                  </code>
+                  <code className="url-box">{selectedBusiness.customer_url}</code>
                 </div>
               </div>
-
-              <p className="notice">
-                Prototype: settings are stored in this browser. The customer
-                link must be publicly accessible before customers can scan the
-                QR code from their own devices.
-              </p>
             </section>
           </div>
         ) : (
@@ -821,7 +849,10 @@ function persist(items: Business[]): boolean {
             <button
               type="button"
               className="primary-button"
-              onClick={() => setShowCreate(true)}
+              onClick={() => {
+                setForm(emptyForm());
+                setShowCreate(true);
+              }}
             >
               + Create business
             </button>
@@ -849,32 +880,22 @@ function persist(items: Business[]): boolean {
           }}
         >
           <strong>Notice:</strong> {error}
-          <button
-            type="button"
-            onClick={() => setError("")}
-            aria-label="Dismiss message"
-            style={{
-              float: "right",
-              border: 0,
-              background: "transparent",
-              cursor: "pointer",
-              fontSize: 18,
-            }}
-          >
-            ×
+          <button type="button" onClick={() => setError("")} style={{ float: "right", border: 0, background: "transparent", cursor: "pointer", fontSize: 18 }}>
+            x
           </button>
         </div>
       )}
 
       <footer className="footer">
-        ReviewBoost AI <span>Honest feedback. Better experiences.</span>
+        ReviewBoost AI <span>Connected to backend server.</span>
       </footer>
 
+      {/* Create modal */}
       {showCreate && (
         <div
           role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
               setShowCreate(false);
               setError("");
             }
@@ -905,24 +926,19 @@ function persist(items: Business[]): boolean {
               boxShadow: "0 25px 80px rgba(0,0,0,0.45)",
             }}
           >
-            <p className="eyebrow">NEW WORKSPACE</p>
+            <p className="eyebrow">NEW BUSINESS</p>
             <h2 id="create-business-title" style={{ marginTop: 8 }}>
               Create a business
             </h2>
-            <p className="muted">
-              Set up a business, then customize its feedback categories.
-            </p>
+            <p className="muted">Set up a business, then customize its feedback questions.</p>
 
             <div style={{ display: "grid", gap: 16, marginTop: 22 }}>
               <label className="field">
                 Business name
                 <input
                   autoFocus
-                  value={newName}
-                  onChange={(event) => setNewName(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") createBusiness();
-                  }}
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder="e.g. Bluebird Cafe"
                 />
               </label>
@@ -930,8 +946,8 @@ function persist(items: Business[]): boolean {
               <label className="field">
                 Business type
                 <select
-                  value={newType}
-                  onChange={(event) => setNewType(event.target.value)}
+                  value={form.business_type}
+                  onChange={(e) => setForm({ ...form, business_type: e.target.value })}
                 >
                   {BUSINESS_TYPES.map((type) => (
                     <option key={type} value={type}>
@@ -945,36 +961,25 @@ function persist(items: Business[]): boolean {
                 Review destination URL
                 <input
                   type="url"
-                  value={newReviewUrl}
-                  onChange={(event) => setNewReviewUrl(event.target.value)}
+                  value={form.review_destination_url || ""}
+                  onChange={(e) => setForm({ ...form, review_destination_url: e.target.value || null })}
                   placeholder="https://..."
                 />
                 <small>Enter the real review page URL.</small>
               </label>
             </div>
 
-            <div
-              style={{
-                display: "flex",
-                gap: 12,
-                marginTop: 24,
-                flexWrap: "wrap",
-              }}
-            >
-              <button
-                type="button"
-                className="primary-button"
-                onClick={createBusiness}
-              >
+            <div style={{ display: "flex", gap: 12, marginTop: 24, flexWrap: "wrap" }}>
+              <button type="button" className="primary-button" onClick={handleCreate}>
                 Create Business
               </button>
-
               <button
                 type="button"
                 className="secondary-button"
                 onClick={() => {
                   setShowCreate(false);
                   setError("");
+                  if (selectedBusiness) setForm(businessToForm(selectedBusiness));
                 }}
               >
                 Cancel

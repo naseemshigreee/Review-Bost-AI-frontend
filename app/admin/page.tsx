@@ -14,6 +14,9 @@ import {
   getDashboard,
   qrUrl,
   DEFAULT_RATING_OPTIONS,
+  APIError,
+  getErrorMessage,
+  isAbortError,
   type BackendBusiness,
   type BusinessInput,
   type Template,
@@ -40,7 +43,11 @@ function emptyForm(): BusinessInput {
       "We'd love to hear about your experience. It only takes a minute.",
     status: "active",
     review_destination_url: null,
-    categories: [{ id: undefined, name: "", description: "", required: true }],
+    categories: [
+      { id: undefined, name: "Quality of Product or Service", description: "", required: true },
+      { id: undefined, name: "Customer Service", description: "", required: true },
+      { id: undefined, name: "Overall Experience", description: "", required: false },
+    ],
     rating_options: DEFAULT_RATING_OPTIONS.map((o) => ({ ...o })),
   };
 }
@@ -64,6 +71,25 @@ function businessToForm(b: BackendBusiness): BusinessInput {
   };
 }
 
+/** Returns a list of problems; empty means the form can be sent to the backend. */
+function validateForm(form: BusinessInput): string[] {
+  const problems: string[] = [];
+  if (!form.name.trim()) problems.push("Business name is empty.");
+  if (form.categories.length === 0) problems.push("Add at least one question.");
+  form.categories.forEach((c, i) => {
+    if (!c.name.trim()) problems.push(`Question ${i + 1} has no name.`);
+  });
+  if (form.rating_options.length < 2) problems.push("Add at least two rating options.");
+  form.rating_options.forEach((r, i) => {
+    if (!r.label.trim()) problems.push(`Rating option ${i + 1} has no label.`);
+  });
+  const names = form.categories.map((c) => c.name.trim().toLowerCase()).filter(Boolean);
+  if (new Set(names).size !== names.length) problems.push("Question names must be unique.");
+  const labels = form.rating_options.map((r) => r.label.trim().toLowerCase()).filter(Boolean);
+  if (new Set(labels).size !== labels.length) problems.push("Rating labels must be unique.");
+  return problems;
+}
+
 export default function AdminPage() {
   const [authed, setAuthed] = useState(false);
   const [checking, setChecking] = useState(true);
@@ -79,6 +105,8 @@ export default function AdminPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [dashboard, setDashboard] = useState<DashboardStats | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [showErrors, setShowErrors] = useState(false);
 
   const [form, setForm] = useState<BusinessInput>(emptyForm());
 
@@ -92,40 +120,31 @@ export default function AdminPage() {
   // ---- Load data when authenticated ----
   useEffect(() => {
     if (!authed) return;
-    let cancelled = false;
+    const controller = new AbortController();
     (async () => {
       setLoading(true);
       setError("");
       try {
         const [biz, tmpl, dash] = await Promise.all([
-          listBusinesses(),
-          getTemplates(),
-          getDashboard(),
+          listBusinesses(controller.signal),
+          getTemplates(controller.signal),
+          getDashboard(controller.signal),
         ]);
-        if (cancelled) return;
         setBusinesses(biz);
         setTemplates(tmpl);
         setDashboard(dash);
-        if (biz.length > 0 && !selectedId) {
+        if (biz.length > 0) {
           setSelectedId(biz[0].id);
           setForm(businessToForm(biz[0]));
         }
       } catch (err) {
-        if (!cancelled) {
-          if (err instanceof Error && "status" in err && (err as Error & { status?: number }).status === 401) {
-            adminLogout();
-            setAuthed(false);
-          } else {
-            setError(err instanceof Error ? err.message : "Failed to load data");
-          }
-        }
+        if (isAbortError(err)) return;
+        handleApiError(err);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authed]);
 
@@ -137,22 +156,67 @@ export default function AdminPage() {
     if (biz) setForm(businessToForm(biz));
     setSaved(false);
     setError("");
+    setShowErrors(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
+  /** 401 anywhere means the session is gone: drop the token and show the login screen. */
+  function handleApiError(err: unknown) {
+    if (err instanceof APIError && err.status === 401) {
+      handleLogout();
+      setLoginError("Your session expired. Please log in again.");
+      return;
+    }
+    setError(getErrorMessage(err));
+  }
+
+  function refreshDashboard() {
+    // Non-blocking: counts update in the background after a mutation.
+    getDashboard()
+      .then(setDashboard)
+      .catch((err) => {
+        if (err instanceof APIError && err.status === 401) handleApiError(err);
+      });
+  }
+
+  /** Runs one admin mutation with a busy flag so buttons cannot be double-clicked. */
+  async function runMutation(action: () => Promise<void>) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setSaved(false);
+    try {
+      await action();
+    } catch (err) {
+      handleApiError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function checkForm(): boolean {
+    const problems = validateForm(form);
+    if (problems.length > 0) {
+      setShowErrors(true);
+      setError(problems.join(" "));
+      return false;
+    }
+    setShowErrors(false);
+    return true;
+  }
+
   // ---- Login ----
   async function handleLogin() {
+    if (loggingIn || !password) return;
     setLoggingIn(true);
     setLoginError("");
     try {
       await adminLogin(password);
       setAuthed(true);
-      setPassword("");
     } catch (err) {
-      setLoginError(
-        err instanceof Error ? err.message : "Login failed. Check your password."
-      );
+      setLoginError(getErrorMessage(err));
     } finally {
+      setPassword("");
       setLoggingIn(false);
     }
   }
@@ -163,51 +227,44 @@ export default function AdminPage() {
     setBusinesses([]);
     setSelectedId("");
     setDashboard(null);
+    setTemplates([]);
+    setForm(emptyForm());
+    setError("");
   }
 
   // ---- Save (update) ----
-  async function handleSave() {
-    if (!selectedId) return;
-    setSaved(false);
-    setError("");
-    try {
+  function handleSave() {
+    if (!selectedId || !checkForm()) return;
+    void runMutation(async () => {
       const updated = await updateBusiness(selectedId, form);
-      setBusinesses((prev) =>
-        prev.map((b) => (b.id === selectedId ? updated : b))
-      );
+      setBusinesses((prev) => prev.map((b) => (b.id === selectedId ? updated : b)));
       setForm(businessToForm(updated));
       setSaved(true);
-      const dash = await getDashboard();
-      setDashboard(dash);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save changes");
-    }
+    });
   }
 
   // ---- Create ----
-  async function handleCreate() {
-    setError("");
-    try {
+  function handleCreate() {
+    if (!checkForm()) return;
+    void runMutation(async () => {
       const created = await createBusiness(form);
       setBusinesses((prev) => [created, ...prev]);
       setSelectedId(created.id);
       setForm(businessToForm(created));
       setShowCreate(false);
-      const dash = await getDashboard();
-      setDashboard(dash);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create business");
-    }
+      setSaved(true);
+      refreshDashboard();
+    });
   }
 
   // ---- Delete ----
-  async function handleDelete() {
+  function handleDelete() {
     if (!selectedId) return;
     if (!window.confirm(`Delete "${form.name}"? This cannot be undone.`)) return;
-    setError("");
-    try {
-      await deleteBusiness(selectedId);
-      const remaining = businesses.filter((b) => b.id !== selectedId);
+    const id = selectedId;
+    void runMutation(async () => {
+      await deleteBusiness(id);
+      const remaining = businesses.filter((b) => b.id !== id);
       setBusinesses(remaining);
       if (remaining.length > 0) {
         setSelectedId(remaining[0].id);
@@ -216,27 +273,21 @@ export default function AdminPage() {
         setSelectedId("");
         setForm(emptyForm());
       }
-      const dash = await getDashboard();
-      setDashboard(dash);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete business");
-    }
+      refreshDashboard();
+    });
   }
 
   // ---- Toggle status ----
-  async function handleToggleStatus() {
+  function handleToggleStatus() {
     if (!selectedId) return;
+    const id = selectedId;
     const newStatus = form.status === "active" ? "inactive" : "active";
-    setError("");
-    try {
-      const updated = await setBusinessStatus(selectedId, newStatus);
-      setForm(businessToForm(updated));
-      setBusinesses((prev) =>
-        prev.map((b) => (b.id === selectedId ? updated : b))
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not change status");
-    }
+    void runMutation(async () => {
+      const updated = await setBusinessStatus(id, newStatus);
+      setForm((f) => ({ ...f, status: updated.status }));
+      setBusinesses((prev) => prev.map((b) => (b.id === id ? updated : b)));
+      refreshDashboard();
+    });
   }
 
   // ---- Category helpers ----
@@ -588,6 +639,7 @@ export default function AdminPage() {
                   Business name
                   <input
                     value={form.name}
+                    aria-invalid={showErrors && !form.name.trim()}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
                     placeholder="e.g. Bluebird Cafe"
                   />
@@ -706,6 +758,7 @@ export default function AdminPage() {
                         Question name
                         <input
                           value={cat.name}
+                          aria-invalid={showErrors && !cat.name.trim()}
                           onChange={(e) => updateCategory(index, { name: e.target.value })}
                           placeholder="e.g. Food Quality"
                         />
@@ -760,6 +813,7 @@ export default function AdminPage() {
                         Label
                         <input
                           value={opt.label}
+                          aria-invalid={showErrors && !opt.label.trim()}
                           onChange={(e) => updateRatingOption(index, { label: e.target.value })}
                           placeholder="e.g. Excellent"
                         />
@@ -803,8 +857,11 @@ export default function AdminPage() {
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={qrUrl(selectedBusiness.id)}
-                      alt={"QR code for " + selectedBusiness.name}
-                      style={{ width: 240, height: 240, display: "block" }}
+                      alt={`QR code linking to the customer feedback page for ${selectedBusiness.name}`}
+                      width={240}
+                      height={240}
+                      decoding="async"
+                      style={{ display: "block" }}
                     />
                   </div>
                   <span className="qr-caption">SCAN TO OPEN FEEDBACK</span>
@@ -816,8 +873,8 @@ export default function AdminPage() {
                   <p className="muted">Save your settings before downloading the QR code.</p>
 
                   <div className="button-stack">
-                    <button type="button" className="primary-button" onClick={handleSave}>
-                      Save Settings
+                    <button type="button" className="primary-button" onClick={handleSave} disabled={busy}>
+                      {busy ? "Saving..." : "Save Settings"}
                     </button>
                     <a
                       className="secondary-button"
@@ -826,10 +883,10 @@ export default function AdminPage() {
                     >
                       Download QR (PNG)
                     </a>
-                    <button type="button" className="secondary-button" onClick={handleToggleStatus}>
+                    <button type="button" className="secondary-button" onClick={handleToggleStatus} disabled={busy}>
                       {form.status === "active" ? "Deactivate" : "Activate"}
                     </button>
-                    <button type="button" className="text-button danger-text" onClick={handleDelete}>
+                    <button type="button" className="text-button danger-text" onClick={handleDelete} disabled={busy}>
                       Delete this business
                     </button>
                   </div>
@@ -938,6 +995,7 @@ export default function AdminPage() {
                 <input
                   autoFocus
                   value={form.name}
+                  aria-invalid={showErrors && !form.name.trim()}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder="e.g. Bluebird Cafe"
                 />
@@ -970,8 +1028,8 @@ export default function AdminPage() {
             </div>
 
             <div style={{ display: "flex", gap: 12, marginTop: 24, flexWrap: "wrap" }}>
-              <button type="button" className="primary-button" onClick={handleCreate}>
-                Create Business
+              <button type="button" className="primary-button" onClick={handleCreate} disabled={busy}>
+                {busy ? "Creating..." : "Create Business"}
               </button>
               <button
                 type="button"

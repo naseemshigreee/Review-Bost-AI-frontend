@@ -2847,3 +2847,10 @@ svg {
   }
 }
 
+
+/* Invalid admin fields (set by client-side validation) */
+.field input[aria-invalid="true"],
+.field textarea[aria-invalid="true"] {
+  border-color: #ff8fa8;
+  box-shadow: 0 0 0 3px rgba(255, 120, 150, 0.18);
+}

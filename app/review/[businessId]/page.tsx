@@ -7,11 +7,27 @@ import {
   getPublicBusiness,
   generateReview,
   trackCopyAndOpen,
+  APIError,
+  getErrorMessage,
+  isAbortError,
   type PublicBusiness,
   type GenerateReviewResult,
 } from "@/lib/api";
 
 type Answers = Record<string, string>;
+
+const SLOW_AFTER_MS = 2500; // show "waking up" message if the backend is slow (cold start)
+const RETRY_DELAYS_MS = [2000, 4000]; // retries for network failures only
+
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => {
+      clearTimeout(t);
+      resolve();
+    });
+  });
+}
 
 function ReviewContent() {
   const params = useParams<{ businessId: string }>();
@@ -21,6 +37,7 @@ function ReviewContent() {
   const [business, setBusiness] = useState<PublicBusiness | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [slow, setSlow] = useState(false);
   const [answers, setAnswers] = useState<Answers>({});
   const [comment, setComment] = useState("");
   const [draft, setDraft] = useState<GenerateReviewResult | null>(null);
@@ -29,25 +46,38 @@ function ReviewContent() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const slowTimer = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
     (async () => {
-      try {
-        const data = await getPublicBusiness(params.businessId, preview);
-        if (!cancelled) {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const data = await getPublicBusiness(params.businessId, preview, controller.signal);
           setBusiness(data);
-          setLoading(false);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setLoadError(
-            err instanceof Error ? err.message : "Could not load this feedback page."
-          );
-          setLoading(false);
+          break;
+        } catch (err) {
+          if (isAbortError(err)) return;
+          const retryable = err instanceof APIError && err.code === "network";
+          if (retryable && attempt < RETRY_DELAYS_MS.length) {
+            await wait(RETRY_DELAYS_MS[attempt], controller.signal);
+            if (controller.signal.aborted) return;
+            continue;
+          }
+          if (err instanceof APIError && err.code === "business_inactive") {
+            setLoadError("This business has paused feedback for now. Please check back later.");
+          } else if (err instanceof APIError && err.status === 404) {
+            setLoadError("Please scan the latest QR code provided by the business.");
+          } else {
+            setLoadError(getErrorMessage(err));
+          }
+          break;
         }
       }
+      clearTimeout(slowTimer);
+      setLoading(false);
     })();
     return () => {
-      cancelled = true;
+      clearTimeout(slowTimer);
+      controller.abort();
     };
   }, [params.businessId, preview]);
 
@@ -114,7 +144,7 @@ function ReviewContent() {
       }
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Could not generate a review draft."
+        getErrorMessage(err)
       );
     } finally {
       setSubmitting(false);
@@ -166,7 +196,7 @@ function ReviewContent() {
       );
       setDraft(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not regenerate.");
+      setError(getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -179,8 +209,12 @@ function ReviewContent() {
       <main className="rb-page" style={styles}>
         <div className="rb-state">
           <span className="rb-brand-mark">*</span>
-          <h1>Getting things ready</h1>
-          <p>Just a moment...</p>
+          <h1>{slow ? "Waking up the server" : "Getting things ready"}</h1>
+          <p role="status" aria-live="polite">
+            {slow
+              ? "The first visit can take a few seconds. Thanks for waiting..."
+              : "Just a moment..."}
+          </p>
         </div>
       </main>
     );
@@ -191,7 +225,7 @@ function ReviewContent() {
       <main className="rb-page" style={styles}>
         <div className="rb-state">
           <span className="rb-brand-mark">*</span>
-          <h1>Page not found</h1>
+          <h1>{loadError.includes("paused") ? "Feedback unavailable" : "Page not found"}</h1>
           <p>{loadError || "Please scan the latest QR code provided by the business."}</p>
         </div>
       </main>
@@ -218,7 +252,21 @@ function ReviewContent() {
       <section className="rb-card">
         <div className="rb-business">
           <div className="rb-business-avatar" aria-hidden="true">
-            {business.name.trim().charAt(0).toUpperCase() || "B"}
+            {business.logo_url ? (
+              // Admin-entered logos can live on any host, so a plain lazy <img> with fixed size is used.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={business.logo_url}
+                alt=""
+                width={47}
+                height={47}
+                loading="lazy"
+                decoding="async"
+                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              />
+            ) : (
+              business.name.trim().charAt(0).toUpperCase() || "B"
+            )}
           </div>
           <div className="rb-business-details">
             <h1>{business.name}</h1>

@@ -1,3 +1,22 @@
+# Current status (read first)
+
+| Item | State |
+| --- | --- |
+| Live app (admin + customer flow) | **WORKING** at https://review-bost-ai-frontend.vercel.app |
+| Backend API, auth, QR, guardrails, events | **WORKING** (31/31 backend tests pass, live API verified) |
+| Full customer journey on a phone-size browser | **VERIFIED** (21/21 checks, started from the URL decoded out of the live QR) |
+| QR opens the ReviewBoost page, not Google | **VERIFIED** (QR PNG decoded; Google only opens at the final Copy & Open step) |
+| AI review drafts (Google Gemini) | **FALLBACK MODE** — Railway `GEMINI_API_KEY` returns `401 API key not valid`. The app safely falls back to a ratings-only draft. Set a valid key in Railway to enable AI. |
+| Build / lint / type-check | **PASS** (Windows webpack + Vercel Turbopack, 0 lint, 0 type errors) |
+
+**To finish (your side):**
+1. Railway -> backend -> Variables -> `GEMINI_API_KEY` = a valid key from https://aistudio.google.com/apikey (no quotes/spaces). Confirm on `/health`: `ai_last_error` should clear after one draft, and `ai_key_check.last4` should match your key.
+2. Vercel -> frontend -> Environment Variables -> `NEXT_PUBLIC_API_URL` = `https://review-boost-ai-backend-production.up.railway.app` (no trailing `/docs`). The code already strips `/docs` as a safety net.
+3. Change the admin password in Railway (it was shared in chat during testing).
+4. Scan the QR with a real phone (checklist at the end of this file).
+
+---
+
 ﻿# ReviewBoost AI — Project Defense Pack
 
 Live app: **https://review-bost-ai-frontend.vercel.app** (admin: `/admin`) · Backend: https://review-boost-ai-backend-production.up.railway.app/docs

@@ -3,8 +3,12 @@
 
 const API_URL = (
   process.env.NEXT_PUBLIC_API_URL ||
-    "https://review-boost-ai-backend-production.up.railway.app"
-).replace(/\/$/, "");
+  "https://review-boost-ai-backend-production.up.railway.app"
+)
+  .trim()
+  .replace(/\/+$/, "")
+  // Guard against a common config mistake: pasting the Swagger UI address (".../docs").
+  .replace(/\/docs$/, "");
 
 export const API_BASE = API_URL;
 

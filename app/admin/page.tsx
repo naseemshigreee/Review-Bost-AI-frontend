@@ -107,6 +107,7 @@ export default function AdminPage() {
   const [dashboard, setDashboard] = useState<DashboardStats | null>(null);
   const [busy, setBusy] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
 
   const [form, setForm] = useState<BusinessInput>(emptyForm());
 
@@ -335,6 +336,26 @@ export default function AdminPage() {
     }));
   }
 
+  function moveRatingOption(index: number, dir: -1 | 1) {
+    setForm((f) => {
+      const opts = [...f.rating_options];
+      const target = index + dir;
+      if (target < 0 || target >= opts.length) return f;
+      [opts[index], opts[target]] = [opts[target], opts[index]];
+      return { ...f, rating_options: opts };
+    });
+  }
+
+  async function copyCustomerUrl(url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedUrl(true);
+      window.setTimeout(() => setCopiedUrl(false), 2000);
+    } catch {
+      setError("Could not copy automatically. Select the URL below and copy it.");
+    }
+  }
+
   function addRatingOption() {
     setForm((f) => ({
       ...f,
@@ -370,6 +391,9 @@ export default function AdminPage() {
   }
 
   const selectedBusiness = businesses.find((b) => b.id === selectedId);
+  const unsaved =
+    !!selectedBusiness &&
+    JSON.stringify(form) !== JSON.stringify(businessToForm(selectedBusiness));
 
   // ===================== RENDER =====================
 
@@ -536,6 +560,25 @@ export default function AdminPage() {
               </p>
             </div>
           ))}
+          {dashboard.recent_activity.length > 0 && (
+            <div className="panel" style={{ flex: "1 1 100%", padding: "16px 18px" }}>
+              <p className="eyebrow">RECENT ACTIVITY</p>
+              <ul style={{ margin: "8px 0 0", padding: 0, listStyle: "none", display: "grid", gap: 6 }}>
+                {dashboard.recent_activity.slice(0, 6).map((a, i) => (
+                  <li key={`${a.created_at}-${i}`} className="muted" style={{ fontSize: 12 }}>
+                    <strong style={{ color: "#dce9fa" }}>{a.business_name}</strong>{" "}
+                    {a.event_type === "visit"
+                      ? "page opened"
+                      : a.event_type === "draft_generated"
+                        ? "review draft generated"
+                        : "Copy & Open clicked"}{" "}
+                    <span>{new Date(a.created_at).toLocaleString()}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="muted" style={{ fontSize: 11, margin: "8px 0 0" }}>{dashboard.note}</p>
+            </div>
+          )}
         </section>
       )}
 
@@ -830,7 +873,9 @@ export default function AdminPage() {
                       </label>
                     </div>
                     <div className="category-actions">
-                      <button type="button" className="tiny-button danger" onClick={() => deleteRatingOption(index)} disabled={form.rating_options.length <= 2} title="Delete">x</button>
+                      <button type="button" className="tiny-button" onClick={() => moveRatingOption(index, -1)} disabled={index === 0} title="Move up" aria-label={`Move rating option ${index + 1} up`}>^</button>
+                      <button type="button" className="tiny-button" onClick={() => moveRatingOption(index, 1)} disabled={index === form.rating_options.length - 1} title="Move down" aria-label={`Move rating option ${index + 1} down`}>v</button>
+                      <button type="button" className="tiny-button danger" onClick={() => deleteRatingOption(index)} disabled={form.rating_options.length <= 2} title="Delete" aria-label={`Delete rating option ${index + 1}`}>x</button>
                     </div>
                   </div>
                 ))}
@@ -870,11 +915,42 @@ export default function AdminPage() {
                 <div className="qr-info">
                   <span className="status-pill">QR READY</span>
                   <h4>Ready to share your feedback page?</h4>
-                  <p className="muted">Save your settings before downloading the QR code.</p>
+                  <p className="muted">
+                    The QR code always opens this business&apos;s ReviewBoost page (never the
+                    review site directly), so you can change questions later without reprinting it.
+                  </p>
+                  {unsaved && (
+                    <p className="notice" role="status" style={{ marginTop: 0, marginBottom: 12 }}>
+                      You have unsaved changes. Customers and the preview see the last saved version.
+                    </p>
+                  )}
 
                   <div className="button-stack">
-                    <button type="button" className="primary-button" onClick={handleSave} disabled={busy}>
-                      {busy ? "Saving..." : "Save Settings"}
+                    <button type="button" className="primary-button" onClick={handleSave} disabled={busy || !unsaved}>
+                      {busy ? "Saving..." : unsaved ? "Save changes" : "All changes saved"}
+                    </button>
+                    <a
+                      className="secondary-button"
+                      href={`/review/${encodeURIComponent(selectedBusiness.id)}?preview=true`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ textDecoration: "none" }}
+                      aria-disabled={form.status !== "active"}
+                      onClick={(e) => {
+                        if (selectedBusiness.status !== "active") {
+                          e.preventDefault();
+                          setError("Activate this business before previewing its customer page.");
+                        }
+                      }}
+                    >
+                      Preview customer page {"\u2197"}
+                    </a>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => copyCustomerUrl(selectedBusiness.customer_url)}
+                    >
+                      {copiedUrl ? "Customer URL copied" : "Copy customer URL"}
                     </button>
                     <a
                       className="secondary-button"
@@ -1029,7 +1105,7 @@ export default function AdminPage() {
 
             <div style={{ display: "flex", gap: 12, marginTop: 24, flexWrap: "wrap" }}>
               <button type="button" className="primary-button" onClick={handleCreate} disabled={busy}>
-                {busy ? "Creating..." : "Create Business"}
+                {busy ? "Creating..." : "Create & Generate QR"}
               </button>
               <button
                 type="button"

@@ -2851,3 +2851,42 @@ svg {
   border-color: #ff8fa8;
   box-shadow: 0 0 0 3px rgba(255, 120, 150, 0.18);
 }
+
+/* Customer step flow */
+.rb-step-heading {
+  margin: 11px 0 10px;
+  color: #122f52;
+  font-size: clamp(24px, 4vw, 31px);
+  font-weight: 800;
+  letter-spacing: -1px;
+  line-height: 1.25;
+  outline: none;
+}
+
+.rb-step-actions {
+  margin: 14px 28px 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+a.rb-submit {
+  width: calc(100% - 56px);
+}
+
+.rb-copy-ok {
+  margin: 0;
+  color: #0d6b47;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+@media (max-width: 480px) {
+  .rb-step-actions {
+    margin: 12px 13px 0;
+    grid-template-columns: 1fr;
+  }
+  a.rb-submit {
+    width: calc(100% - 26px);
+  }
+}

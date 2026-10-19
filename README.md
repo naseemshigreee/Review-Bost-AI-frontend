@@ -1,36 +1,55 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+﻿# ReviewBoost AI — Frontend
 
-## Getting Started
+Next.js 16 (React 19) app with two panels:
 
-First, run the development server:
+- **Admin panel** (`/admin`): password login, multi-business management, feedback-form builder (questions, descriptions, required flags, rating options with reorder), review destination, QR code (view, download PNG, copy URL, preview), activate/deactivate, and a dashboard of real tracked events.
+- **Customer panel** (`/review/{business_id}`): opened by scanning the QR. Four steps: Welcome, Feedback, AI draft (edit, regenerate, copy), Copy & open review page.
+
+All data and AI calls go through the FastAPI backend ([Review-Boost-AI-Backend](https://github.com/naseemshigreee/Review-Boost-AI-Backend)). The frontend holds no secrets.
+
+Live: https://review-bost-ai-frontend.vercel.app · Backend API docs: https://review-boost-ai-backend-production.up.railway.app/docs
+
+## Setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Optional `.env.local`:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```
+NEXT_PUBLIC_API_URL=https://review-boost-ai-backend-production.up.railway.app
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+If unset, `lib/api.ts` defaults to the production backend. For a local backend use `http://127.0.0.1:8000` and add `http://localhost:3000` to the backend `ALLOWED_ORIGINS`.
 
-## Learn More
+## Run, check, build
 
-To learn more about Next.js, take a look at the following resources:
+| Task | macOS / Linux / Vercel | Windows |
+| --- | --- | --- |
+| Dev server | `npm run dev` | `npm run dev:win` |
+| Lint | `npm run lint` | same |
+| Type-check | `npm run typecheck` | same |
+| Production build | `npm run build` (Turbopack) | `npm run build:win` (webpack) |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Windows needs the `:win` scripts because the Turbopack native SWC binary does not load on that machine; webpack works.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+> This project uses Next.js 16, which has breaking changes compared with older versions. Read `node_modules/next/dist/docs/` before changing Next.js-specific code (see `AGENTS.md`).
 
-## Deploy on Vercel
+## Deploy (Vercel)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Import this repo in Vercel (framework: Next.js, default build command).
+2. Optionally set `NEXT_PUBLIC_API_URL` for Production and Preview.
+3. Push to `main`; Vercel deploys automatically.
+4. In the backend (Railway) set `FRONTEND_BASE_URL` to this Vercel URL and add it to `ALLOWED_ORIGINS`. QR codes encode `FRONTEND_BASE_URL/review/{id}`, so a wrong value makes every QR open the wrong site. Check it with `GET {backend}/health`, field `frontend_base_url`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Structure
+
+```
+app/admin/page.tsx               admin panel
+app/review/[businessId]/page.tsx customer 4-step flow
+app/layout.tsx                   root layout, self-hosted Inter font (next/font)
+lib/api.ts                       typed API client, APIError, abort support
+docs/DEFENSE.md                  architecture, AI safety, results, demo script, examiner Q&A
+docs/BLUEPRINT_CHECK.md          blueprint requirement-by-requirement status
+```

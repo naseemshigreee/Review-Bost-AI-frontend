@@ -416,7 +416,7 @@ export default function AdminPage() {
           <div className="section-heading">
             <div>
               <p className="eyebrow">SECURE ACCESS</p>
-              <h3>Password</h3>
+              <h2>Password</h2>
             </div>
             <span className="heading-icon">L</span>
           </div>

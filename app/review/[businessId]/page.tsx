@@ -454,7 +454,11 @@ function ReviewContent() {
                 }}
                 rows={6}
               />
-              <p style={{ margin: 0, color: "#5f7390", fontSize: 11, lineHeight: 1.6 }}>{draft.disclaimer}</p>
+              <p style={{ margin: 0, color: "#5f7390", fontSize: 11, lineHeight: 1.6 }}>
+                {draft.source === "ai"
+                  ? draft.disclaimer
+                  : "This draft was built from your ratings only. Please read it, edit it, and make sure it reflects your real experience before posting."}
+              </p>
               {copied === true && <p className="rb-copy-ok" role="status">Copied to clipboard.</p>}
               {copied === false && (
                 <p className="rb-alert rb-alert-error" role="alert" style={{ margin: 0 }}>

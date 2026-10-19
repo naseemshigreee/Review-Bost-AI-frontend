@@ -101,8 +101,11 @@ The prompt also tells the model that customer text is data, not instructions, an
 | Admin API without token / with invalid token → 401 | **PASS** |
 | Comment over 600 chars → 422; invalid event type → 422 | **PASS** |
 | Wrong password ×6 → 401 ×5 then 429 (rate limit) | **PASS** |
-| Correct admin login, live CRUD, live QR decode, live AI draft (`source: ai`), live events, inactive business on live | **NOT TESTED** (admin password not used in this run; all covered by backend tests offline) |
-| Scan with a real phone | **NOT TESTED** (manual checklist below) |
+| Live admin API (25 checks): login, templates, create, `customer_url`, QR PNG served + **decoded = `/review/{id}`**, download header, public view hides admin fields, required questions, cross-business isolation, draft, regenerate, injection removed, contact details stripped, Copy & Open event, dashboard counts, edit visible immediately, stable category IDs, deactivate → 403, reactivate, unsafe URL rejected | **PASS** 25/25 |
+| Live AI draft from Gemini (`source: ai`) | **FAIL**: Google rejects the configured key (`401 API key not valid`). The app correctly fell back to the safe draft. Fix: new key in Railway `GEMINI_API_KEY` |
+| Real Chrome, iPhone-size screen (390×844), starting from the URL decoded out of the live QR (21 checks): welcome → Start → missing-answer message → selections marked → draft → edit → Copy (clipboard verified) → Copy & Open (new tab = configured destination, clipboard verified) → honest done screen → Back keeps answers; no overflow on mobile or desktop; no console errors | **PASS** 21/21 |
+| Data survives a backend redeploy | **PASS** (one observation: a business created before a redeploy was still there after it) |
+| Scan with a real phone camera | **NOT TESTED** (manual checklist below) |
 
 ### Lighthouse (Chrome headless, Lighthouse 13.5.0, one run per row)
 
@@ -110,7 +113,7 @@ The prompt also tells the model that customer text is data, not instructions, an
 | --- | --- | --- |
 | Admin, mobile | Perf **59**, A11y 98, BP 100, SEO 100 · LCP 3.99 s · TBT 804 ms · CLS 0.039 | Perf **98**, A11y 100, BP 100, SEO 100 · LCP 1.99 s · TBT 116 ms · CLS 0.000 |
 | Admin, desktop | Perf 80 and 95 (two runs) · LCP 1.37–1.7 s | Perf **99**, A11y 100 · LCP 0.62 s · TBT 14 ms · CLS 0.024 |
-| Customer page, mobile | not measured before | Perf 99, A11y 100, BP 96, SEO 100 · LCP 1.97 s · TBT 69 ms |
+| Customer page, mobile | not measured before | Perf 99, A11y 100, BP 96, SEO 100 · LCP 1.97 s · TBT 69 ms (not-found state, see note) |
 | Customer page, desktop | not measured before | Perf 91, A11y 100, BP 96, SEO 100 · LCP 0.42 s |
 
 Notes: the customer page was measured on a non-existent business ID (no admin login available), so it shows the "Page not found" state; Best Practices 96 is the expected console 404 from that probe. Single Lighthouse runs vary by several points.
@@ -134,7 +137,9 @@ Most of this is the React/Next.js runtime shared by both pages; the app code its
 | Public business (404 path) | 724 / 1470 ms | 710 / 730 ms |
 | QR (404 path) | — | 709 / 741 ms |
 
-All endpoints sit at ≈700 ms, which is the network round trip from the test machine to the Railway region, not server work. The 60 s public-view cache removes a database read for repeat scans but cannot change network distance. Latency of a real business page, a live AI draft and a real QR PNG was **NOT TESTED** (needs a real business). No cold-start delay was observed in this run; the customer page still shows a "waking up" message and retries if the backend is slow.
+Real business (live, 20 requests): public business page p50 710 ms / p95 730 ms; QR PNG p50 710 ms / p95 800 ms. Draft generation took 710–770 ms, but that was the fallback path because the Gemini key is invalid; **real AI latency is NOT TESTED**. In the mobile browser the welcome screen appeared 3.7 s and 8.1 s after navigation in two runs.
+
+All endpoints sit at ≈700 ms, which is the network round trip from the test machine to the Railway region, not server work. The 60 s public-view cache removes a database read for repeat scans but cannot change network distance. No cold-start delay was observed in this run; the customer page still shows a "waking up" message and retries if the backend is slow.
 
 ## 5. Demo script (6 minutes)
 
@@ -181,11 +186,13 @@ Before the demo: open `/admin` and log in once (wakes the backend), have one bus
 
 ## Known limitations
 
-- SQLite on Railway needs a mounted volume or data is erased on redeploy (not verified whether a volume exists).
+- SQLite on Railway: data survived one redeploy during testing, but the Railway volume setting itself was not inspected.
+- The Gemini API key on Railway is currently invalid, so every draft uses the fallback until a new key is set.
 - One admin password; no roles.
 - In-memory rate limits and cache (single instance).
 - Lighthouse customer-page numbers are for the not-found state; a real business page was not measured.
-- Real-phone scanning, live AI drafts and the live admin flow were not tested in the final run.
+- Real-phone camera scanning and real AI (Gemini) drafts were not verified.
+- Bug found and fixed during live testing: Vercel's `NEXT_PUBLIC_API_URL` pointed at the Swagger page (`.../docs`), so every customer page showed "Page not found". The client now strips a trailing `/docs`; the Vercel variable should still be corrected.
 
 ## Manual checklist (real phone)
 

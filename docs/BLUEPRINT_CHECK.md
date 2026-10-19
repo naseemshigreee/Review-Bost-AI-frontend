@@ -2,7 +2,7 @@
 
 Status key: **Done** = implemented and checked in code/tests · **Partial** = works with a stated limit · **Later** = listed by the blueprint as a later-version feature, or deliberately out of MVP scope.
 
-"Live-verified" means checked against the deployed site in this session. Items that need an admin login on the live site were **not** live-tested (no admin password was used); they are covered by the backend test suite and code review.
+"Live" means checked against the deployed site with a temporary test business that was deleted afterwards.
 
 ## 1. Two separate panels
 
@@ -72,11 +72,11 @@ The blueprint suggests Next.js API routes + Supabase. This project uses **Next.j
 
 | Test from the blueprint | Status |
 | --- | --- |
-| Admin creates a business and customises its form | Done in code and backend tests · live: NOT TESTED (needs admin password) |
-| QR appears immediately and can be downloaded | Done (backend test decodes the PNG) · live: NOT TESTED |
-| Scanning on another phone opens the correct customer page | NOT TESTED: needs a real phone (see manual checklist in `DEFENSE.md`) |
-| Changing settings updates the customer form | Done: cache evicted on every admin write (tested) |
-| Customer selects ratings, submits, edits AI draft | Done in code · live: NOT TESTED end-to-end with a real business |
-| Copy and redirect with clear error handling | Done in code · needs phone check |
-| No settings leak between businesses | Done (tested) |
-| Works on desktop and mobile without broken layout | Responsive CSS present; Lighthouse mobile/desktop run; real-device check is in the manual checklist |
+| Admin creates a business and customises its form | **PASS** live (API) |
+| QR appears immediately and can be downloaded | **PASS** live: PNG served, download header, decoded URL = `/review/{id}` |
+| Scanning on another phone opens the correct customer page | Decoded live QR URL opened in a phone-size Chrome: **PASS**. Real phone camera: NOT TESTED |
+| Changing the business's settings updates its customer form | **PASS** live (renamed question visible immediately in browser) |
+| Customer selects ratings, submits, edits AI draft | **PASS** live in browser, but drafts came from the fallback because the Gemini key is invalid |
+| Copy and redirect with clear error handling | **PASS** live in browser (clipboard verified, new tab = destination, honest done screen) |
+| One business's settings never leak into another | **PASS** live (other business's question rejected with 422) |
+| Works on desktop and mobile without broken layout | **PASS** in Chrome at 390×844 and 1366×900 (no overflow); real devices: NOT TESTED |
